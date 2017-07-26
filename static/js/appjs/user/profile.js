@@ -78,26 +78,28 @@
             });
             data.addRows(completeGraphData);
             var options = {
-              seriesType: "line",
+              curveType: 'function',
               width: 900,
               height: 500,
               interpolateNulls: true,
               aggregationTarget: 'multiple',
-              focusTarget: 'category',
+              focusTarget: 'datum',
               tooltip: {
                   trigger: 'selection',
                   isHtml: true
               },
               pointSize: 4,
               explorer: {
-                  keepInBounds: true
+                  keepInBounds: true,
+                  maxZoomOut: 1.45,
+                  maxZoomIn: 0.45,
               }
             };
             var chart = new google.visualization.LineChart(document.getElementById('cumulative_graph'));
             chart.draw(data, options);
             function lineChartSelectHandler(e) {
                 var selection = chart.getSelection();
-                if(selection.length === 0) return;
+                if(selection.length === 0 || selection[0].row === null) return;
                 var timeStamp = data.getValue(selection[0].row, 0);
                 var dateStr = [timeStamp.getFullYear(),
                                zeropad(timeStamp.getMonth() + 1),
