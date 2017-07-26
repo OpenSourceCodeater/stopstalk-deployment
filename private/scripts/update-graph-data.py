@@ -1,3 +1,36 @@
+"""
+    Copyright (c) 2015-2017 Raj Patel(raj454raj@gmail.com), StopStalk
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+    THE SOFTWARE.
+"""
+
+# Usage
+# -----
+# First Argument - Comma seperated lower-cased sites
+# Second Argument - {batch, specific_user, new_user}
+#   * batch - Update graph data for users for whom (user_id % <fourth_argment> == <third_argument>)
+#   * specific_user -
+#       Third argument - normal/custom
+#       Fourth argument - <user_id>
+#   * new_user - Retrieve contest data for all the users whose graph_data_retrieved is not True
+# python web2py.py -S stopstalk -M -R applications/stopstalk/private/scripts/update-graph-data.py -A codechef,codeforces,hackerrank batch 5 100
+
 import requests, re, os, sys, json, gevent, pickle
 from gevent import monkey
 gevent.monkey.patch_all(thread=False)
@@ -10,6 +43,7 @@ SERVER_FAILURE = "SERVER_FAILURE"
 NOT_FOUND = "NOT_FOUND"
 OTHER_FAILURE = "OTHER_FAILURE"
 REQUEST_FAILURES = (SERVER_FAILURE, NOT_FOUND, OTHER_FAILURE)
+INVALID_HANDLES = set([(row.handle, row.site) for row in db(db.invalid_handle).select()])
 
 # -----------------------------------------------------------------------------
 def get_request(url, headers={}, timeout=current.TIMEOUT, params={}):
@@ -48,7 +82,7 @@ def get_request(url, headers={}, timeout=current.TIMEOUT, params={}):
 
 class User:
 
-    def __init__(self, user_id, handles, custom=False):
+    def __init__(self, user_id, handles, user_record, custom=False):
         self.handles = handles
         if custom:
             self.pickle_file_path = "./applications/stopstalk/graph_data/" + \
@@ -59,6 +93,7 @@ class User:
         self.contest_mapping = {}
         self.previous_graph_data = None
         self.graph_data = dict([(x.lower() + "_data", []) for x in current.SITES])
+        self.user_record = user_record
 
         if os.path.exists(self.pickle_file_path):
             self.previous_graph_data = pickle.load(open(self.pickle_file_path, "rb"))
@@ -112,7 +147,6 @@ class User:
                                              "data": cookoff_contest_data},
                                             {"title": "CodeChef Lunchtime",
                                              "data": ltime_contest_data}]
-        print self.graph_data["codechef_data"]
 
     def codeforces_data(self):
         handle = self.handles["codeforces_handle"]
@@ -163,7 +197,6 @@ class User:
 
         self.graph_data["codeforces_data"] = [{"title": "Codeforces",
                                                "data": contest_data}]
-        print self.graph_data["codeforces_data"]
 
     def hackerrank_data(self):
         handle = self.handles["hackerrank_handle"]
@@ -195,7 +228,6 @@ class User:
                                       "data": final_json})
 
         self.graph_data["hackerrank_data"] = hackerrank_graphs
-        print hackerrank_graphs
 
     def spoj_data(self):
         pass
@@ -222,27 +254,75 @@ class User:
                     if len(contest_data["data"]) < len(previous_value):
                         contest_data = previous_value
         pickle.dump(self.graph_data, open(self.pickle_file_path, "wb"))
-
         print "Writing to filesystem done"
 
     def update_graph_data(self, sites):
         threads = []
         for site in sites:
-            if self.handles.has_key(site + "_handle"):
+            if self.handles.has_key(site + "_handle") and self.handles[site + "_handle"] != "":
                 threads.append(gevent.spawn(getattr(self,
                                                     site + "_data")))
 
         gevent.joinall(threads)
         self.write_to_filesystem()
+        self.user_record.update_record(graph_data_retrieved=True)
+
+def get_user_objects(aquery=None, cquery=None, sites=None):
+    user_objects = []
+    users = []
+    if aquery:
+        users += db(aquery).select().records
+    if cquery:
+        users += db(cquery).select().records
+
+    for user in users:
+        if "custom_friend" in user:
+            custom = True
+            user = user["custom_friend"]
+        else:
+            custom = False
+            user = user["auth_user"]
+
+        user_dict = {}
+        for site in sites:
+            site_handle = site + "_handle"
+            if user[site_handle] != "" and \
+               (user[site_handle], site) not in INVALID_HANDLES:
+                user_dict[site_handle] = user[site_handle]
+        print user
+        user_objects.append(User(user.id, user_dict, user, custom))
+
+    return user_objects
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        sites = sys.argv[1].strip().split(",")
+    sites = sys.argv[1].strip().split(",")
+    atable = db.auth_user
+    cftable = db.custom_friend
+    user_objects = []
+
+    if sys.argv[2] == "batch":
+        index = int(sys.argv[3])
+        N = int(sys.argv[4])
+        user_objects = get_user_objects((atable.id % N == index),
+                                        (cftable.id % N == index),
+                                        sites)
+    elif sys.argv[2] == "specific_user":
+        if sys.argv[3] == "normal":
+            user_objects = get_user_objects(aquery=(atable.id == int(sys.argv[4])),
+                                            sites=sites)
+        else:
+            user_objects = get_user_objects(cquery=(cftable.id == int(sys.argv[4])),
+                                            sites=sites)
+    elif sys.argv[2] == "new_user":
+        user_objects = get_user_objects((atable.graph_data_retrieved != True),
+                                        (cftable.graph_data_retrieved != True),
+                                        sites=sites)
     else:
-        sites = [site.lower() for site in current.SITES]
-    u = User(1, {"codechef_handle": "tryingtocode", "codeforces_handle": "raj454raj", "hackerrank_handle": "tryingtocode"})
-    u = User(157, {"codechef_handle": "darkshadows", "codeforces_handle": "darkshadows", "hackerrank_handle": "darkshadows"})
-    u.update_graph_data(sites)
+        print "Invalid Arguments"
+
+    for user_object in user_objects:
+        user_object.update_graph_data(sites)
+    # u.update_graph_data(sites)
     # db = current.db
     # atable = db.auth_user
     # cftable = db.custom_friend
